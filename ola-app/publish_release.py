@@ -26,15 +26,20 @@ import sys
 import tempfile
 
 
+QUERY_TIMEOUT = 60  # 查询类调用（秒）
+PUBLISH_TIMEOUT = 900  # 创建 Release、上传资产（秒）
+
+
 def gh(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(["gh", *args], check=check, text=True, capture_output=True)
+    return subprocess.run(["gh", *args], check=check, text=True, capture_output=True,
+                          timeout=QUERY_TIMEOUT)
 
 
 def run(cmd: list[str], dry_run: bool) -> None:
     if dry_run:
         print("  [dry-run] " + " ".join(cmd))
         return
-    result = subprocess.run(cmd, text=True, capture_output=True)
+    result = subprocess.run(cmd, text=True, capture_output=True, timeout=PUBLISH_TIMEOUT)
     if result.stdout:
         print(result.stdout.rstrip())
     if result.returncode != 0:

@@ -41,7 +41,8 @@ GET https://api.github.com/repos/MaerdDaed/eve_local_sde/releases/latest
 开发机 cron 在 11:00 到 11:55 之间每 5 分钟调用一次 `ola-app/update_and_publish.sh`：
 
 1. 取文件锁。上一次还没跑完就直接退出（更新客户端缓存加生成可能超过 5 分钟的检查间隔）。
-2. 读 CDN 上的最新 build。该 build 已经有 Release 就退出，所以发布成功后，这个窗口里剩下的检查都直接退出。
+2. 读 CDN 上的最新 build。该 build 的 Release 三个资产齐全就退出，所以发布成功后，这个窗口里剩下的检查都直接退出。
+   创建 Release 和上传资产是两步，上传中途失败会留下一个资产不全的 Release；下一次检查会发现它并重新生成、覆盖。
 3. 有新 build 时：更新客户端缓存 → 生成 13 个文件 → 自检 → 组包 → 发布 Release。
 
 任何一步失败都会退出并且不发布；超过 12:00 不打断，让它跑完。
@@ -103,7 +104,11 @@ EVE_UPDATE_CLIENT=/path/to/update_cn_client.py \
 EVE_SDE_DRY_RUN=1 ola-app/update_and_publish.sh
 ```
 
-定时任务是非登录会话，可能读不到 `gh` 存在系统钥匙串里的令牌。安装定时任务前先在同样的环境里验证一次。
+定时任务是非登录会话，可能读不到 `gh` 存在系统钥匙串里的令牌：令牌如果在 login 钥匙串里，机器重启后要有人登录
+它才解锁。安装定时任务前先用真实的 cron 跑一次验证。读不到时的办法是把令牌放进本机一个仅本人可读的文件，
+由定时任务的入口脚本通过 `GH_TOKEN` 交给 `gh`；令牌仍然不进仓库、不进脚本。
+
+定时任务用的是它所调用的那份检出里当前的版本。更新了工具链以后，在那份检出里 `git pull`。
 
 `1.execute_loaders.py` 在容器里以 root 运行，它写出的 `jsonl/`、`jsonl.bak/` 和 `changeLog.md` 属主是 root（其他文件读得到）。
 宿主机上的脚本只读这些文件，所以流水线不受影响；手工删除工作目录时会报 Permission denied，需要用容器或 root 来删。

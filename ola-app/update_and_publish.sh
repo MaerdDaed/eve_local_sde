@@ -59,14 +59,22 @@ BUILD="$(sed -n 's/^CDN build (serenity) = \([0-9]\{1,\}\)$/\1/p' "$WORK/plan.tx
 [ -n "$BUILD" ] || die "没能从 update_cn_client.py 的输出里解析出 build 号"
 log "CDN 最新 build = $BUILD，工具链 = $TOOLCHAIN"
 
-EXISTING="$(gh release view "$BUILD" --repo "$SLUG" --json tagName --jq .tagName 2>&1)" && {
-  log "build $BUILD 已有 Release，本次无事可做"
-  exit 0
-}
-case "$EXISTING" in
-  *"release not found"*) ;;
-  *) die "查询 Release 失败: $EXISTING" ;;
-esac
+# 「已有 Release」按三个资产齐全算：创建 Release 与上传资产是两步，上传中途失败会留下一个
+# 资产不全的 Release，这时重新生成并覆盖，而不是当成已经发布。
+EXPECTED="manifest.json,ola-app-jsonl-cn$BUILD.tar.gz,ola-app-jsonl-cn$BUILD.tar.gz.sha256"
+RELEASE_ASSETS="$(timeout 60 gh release view "$BUILD" --repo "$SLUG" \
+  --json assets --jq '[.assets[].name] | sort | join(",")' 2>&1)" && RELEASE_STATUS=0 || RELEASE_STATUS=$?
+if [ "$RELEASE_STATUS" = "0" ]; then
+  if [ "$RELEASE_ASSETS" = "$EXPECTED" ]; then
+    log "build $BUILD 已有 Release，本次无事可做"
+    exit 0
+  fi
+  log "build $BUILD 的 Release 资产不全（$RELEASE_ASSETS），重新生成并覆盖"
+elif [[ "$RELEASE_ASSETS" == *"release not found"* ]]; then
+  :
+else
+  die "查询 Release 失败: $RELEASE_ASSETS"
+fi
 
 log "更新客户端缓存到 build $BUILD"
 python3 "$EVE_UPDATE_CLIENT" --cache "$CACHE"

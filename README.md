@@ -4,8 +4,8 @@ EVE Online 国服（晨曦）客户端静态数据（SDE）提取工具链，以
 [ola-app](https://github.com/MaerdDaed/ola-app) 的数据发布流水线。
 
 客户端的 `.fsdbinary` 是私有格式，只能用客户端自带的 `*Loader.pyd` 解析（Windows + Python 2.7），
-所以整套流程只能在一台配有 Wine 镜像和完整客户端缓存的开发机上跑。产物以 GitHub Release 发布，
-消费方只需要能访问 GitHub。
+所以整套流程只能在一台配有 Wine 镜像和完整客户端缓存的开发机上跑。产物放在开发机的产物目录里，由另外的流程
+上传到各环境；同时发布 GitHub Release 留档。
 
 ## 目录
 
@@ -17,7 +17,7 @@ EVE Online 国服（晨曦）客户端静态数据（SDE）提取工具链，以
 | `ola-app/gen_jump_fatigue_ships.py` | 从舰船数据取属性 1971「跳跃疲劳系数」，生成 `jump_fatigue_ships.jsonl` |
 | `ola-app/build_package.py` | 自检、生成 `manifest.json`、组包 |
 | `ola-app/publish_release.py` | 创建或覆盖 GitHub Release |
-| `ola-app/update_and_publish.sh` | 流水线入口，由开发机定时任务调用 |
+| `ola-app/update_and_publish.sh` | 生成流水线入口：生成产物、放进产物目录、发布 Release 留档。什么时候调用、怎么上传到各环境，由仓库外的流程负责 |
 
 ## 发布约定
 
@@ -36,16 +36,42 @@ EVE Online 国服（晨曦）客户端静态数据（SDE）提取工具链，以
 GET https://api.github.com/repos/MaerdDaed/eve_local_sde/releases/latest
 ```
 
-## 每日流水线
+## 流水线
 
-开发机 cron 在 11:00 到 11:55 之间每 5 分钟调用一次 `ola-app/update_and_publish.sh`：
+`ola-app/update_and_publish.sh` 每次运行做三件事。什么时候调用（定时任务）、产物怎么上传到 dev/prd，不在这个仓库里。
 
-1. 取文件锁。上一次还没跑完就直接退出（更新客户端缓存加生成可能超过 5 分钟的检查间隔）。
-2. 读 CDN 上的最新 build。该 build 的 Release 三个资产齐全就退出，所以发布成功后，这个窗口里剩下的检查都直接退出。
-   创建 Release 和上传资产是两步，上传中途失败会留下一个资产不全的 Release；下一次检查会发现它并重新生成、覆盖。
-3. 有新 build 时：更新客户端缓存 → 生成 13 个文件 → 自检 → 组包 → 发布 Release。
+1. 取文件锁。上一次还没跑完就直接退出（更新客户端缓存加生成可能超过调用间隔）。
+2. 读 CDN 上的最新 build。设了 `EVE_SDE_OUT_DIR` 时，产物目录里已有这个 build 就不再生成；有新 build 时：
+   更新客户端缓存 → 生成 13 个文件 → 自检 → 组包 → 放进产物目录。
+3. 把产物发布成 GitHub Release 留档。该 build 的 Release 三个资产齐全就跳过；上一轮没发成的，这一轮从产物目录补发，
+   不必重新生成。创建 Release 和上传资产是两步，上传中途失败会留下一个资产不全的 Release，脚本会覆盖它。
 
-任何一步失败都会退出并且不发布；超过 12:00 不打断，让它跑完。
+生成和交接不需要 GitHub 凭据。任何一步失败都会退出（退出码非 0），不留半成品：产物目录里的 `latest/`
+要么还是上一版，要么是完整的新版。
+
+不设 `EVE_SDE_OUT_DIR` 时是旧流程：以「GitHub 上的 Release 是否齐全」判断是否已生成，生成后立即发布，产物不保留。
+
+### 交接给上传方
+
+上传流程只需要认产物目录里的 `latest/`：
+
+```
+$EVE_SDE_OUT_DIR/
+├── .eve-sde-outbox      标记文件：这个目录由脚本管理，脚本会删掉里面的旧版本
+├── latest -> 3736091    符号链接，指向最新一版的目录；换版本时原子替换
+└── 3736091/             目录名是 build 号，只留最新一版
+    ├── manifest.json
+    ├── ola-app-jsonl-cn3736091.tar.gz
+    └── ola-app-jsonl-cn3736091.tar.gz.sha256
+```
+
+- 三个文件与 GitHub Release 的资产是同一套：包内是 `manifest.json` 和 `jsonl/` 下的 13 个数据文件，`.sha256` 是 `sha256sum -c` 的格式。
+- `latest/` 任何时候都是完整的一版：脚本先写进临时目录，改名之后才替换链接。
+- 有没有新版本，看 `latest` 指向的 build 号。同一个 build 每次重新打包，摘要都会变（`manifest.json` 里有生成时间）；
+  但产物目录里的这一版，在下一个 build 出来之前不会再变。
+- 要强制重新生成当前的 build：删掉产物目录里它的目录，下一次运行会重新生成并补发。
+- 产物目录必须是空目录，或者是脚本管理过的（有标记文件）。指到一个已有内容的别的目录上，脚本会拒绝运行。
+- ola-app 使用一版数据之前会校验清单与逐文件摘要，传输中途损坏的包不会被用上。
 
 ### 生成步骤
 
@@ -82,7 +108,7 @@ GET https://api.github.com/repos/MaerdDaed/eve_local_sde/releases/latest
 - 客户端缓存目录（`EVESharedCache`，含 `ResFiles/` 和 `serenity/`），工具链的工作目录在它下面。
 - `update_cn_client.py`：读 CDN 最新 build、增量更新客户端缓存。它不在这个仓库里。
 - Wine 镜像 `evejs-wine-sde:1`：Wine + Python 2.7 + 客户端的解析库，用来跑 `1.execute_loaders.py`。
-- `gh` 已登录一个对该仓库有推送权限的账号。令牌不写进任何脚本。
+- 留档需要 `gh` 已登录一个对该仓库有推送权限的账号；只生成、不发布时不需要。令牌不写进任何脚本。
 
 `update_and_publish.sh` 通过环境变量拿到与本机相关的路径：
 
@@ -90,23 +116,31 @@ GET https://api.github.com/repos/MaerdDaed/eve_local_sde/releases/latest
 |---|---|---|
 | `EVE_CLIENT_CACHE` | 是 | `EVESharedCache` 根目录 |
 | `EVE_UPDATE_CLIENT` | 是 | `update_cn_client.py` 的路径 |
-| `EVE_SDE_RELEASE_REPO` | 否 | 发布仓库，默认 `MaerdDaed/eve_local_sde` |
+| `EVE_SDE_RELEASE_REPO` | 否 | 留档仓库，默认 `MaerdDaed/eve_local_sde` |
+| `EVE_SDE_OUT_DIR` | 否 | 产物目录，上传流程从这里取（见「交接给上传方」）。必须是绝对路径；不设时产物不保留 |
+| `EVE_SDE_PUBLISH_RELEASE` | 否 | 设为 `0` 时不发布 GitHub Release |
 | `EVE_WINE_IMAGE` | 否 | Wine 镜像，默认 `evejs-wine-sde:1` |
 | `EVE_SDE_WORKSPACE` | 否 | 工具链工作目录，默认 `$EVE_CLIENT_CACHE/workspace` |
 | `EVE_SDE_LOCK` | 否 | 文件锁，默认 `/tmp/eve_local_sde.lock` |
-| `EVE_SDE_DRY_RUN` | 否 | 设为 `1` 时走完生成、自检、组包，停在发布之前 |
+| `EVE_SDE_DRY_RUN` | 否 | 设为 `1` 时走完生成、自检、组包后停住：不发布，也不动产物目录 |
 
-手工验证一次（不发布）：
+手工验证一次：不发布，用独立的工作目录和产物目录，不碰正式的那两个。工作目录必须放在客户端缓存根目录下面
+（工具链要到上一级找 `ResFiles/` 和 `serenity/`）：
 
 ```bash
 EVE_CLIENT_CACHE=/path/to/EVESharedCache \
 EVE_UPDATE_CLIENT=/path/to/update_cn_client.py \
-EVE_SDE_DRY_RUN=1 ola-app/update_and_publish.sh
+EVE_SDE_WORKSPACE=/path/to/EVESharedCache/workspace-trial \
+EVE_SDE_OUT_DIR=/path/to/eve-sde-outbox-trial \
+EVE_SDE_PUBLISH_RELEASE=0 ola-app/update_and_publish.sh
 ```
 
+只想看产物、连产物目录也不想写时，把 `EVE_SDE_OUT_DIR` 去掉并加 `EVE_SDE_DRY_RUN=1`：产物留在临时目录里并打印路径。
+
 定时任务是非登录会话，可能读不到 `gh` 存在系统钥匙串里的令牌：令牌如果在 login 钥匙串里，机器重启后要有人登录
-它才解锁。安装定时任务前先用真实的 cron 跑一次验证。读不到时的办法是把令牌放进本机一个仅本人可读的文件，
-由定时任务的入口脚本通过 `GH_TOKEN` 交给 `gh`；令牌仍然不进仓库、不进脚本。
+它才解锁。设了 `EVE_SDE_OUT_DIR` 时读不到也不影响生成和交接，只是留档会失败，下一轮从产物目录补发。
+要留档成功，办法是把令牌放进本机一个仅本人可读的文件，由定时任务的入口脚本通过 `GH_TOKEN` 交给 `gh`；
+令牌仍然不进仓库、不进脚本。
 
 定时任务用的是它所调用的那份检出里当前的版本。更新了工具链以后，在那份检出里 `git pull`。
 
